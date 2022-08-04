@@ -2,6 +2,9 @@ import logging
 import re
 from contextlib import contextmanager
 from enum import Enum
+from itertools import chain
+
+flatten = chain.from_iterable
 
 
 CAMEL_CASE_PATTERN = re.compile("(?<!^)(?=[A-Z])")
