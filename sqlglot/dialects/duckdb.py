@@ -1,8 +1,10 @@
 from sqlglot import exp
 from sqlglot.dialects.dialect import (
     Dialect,
-    format_time_lambda,
     approx_count_distinct_sql,
+    arrow_json_extract_sql,
+    arrow_json_extract_scalar_sql,
+    format_time_lambda,
     no_safe_divide_sql,
     no_tablesample_sql,
     rename_func,
@@ -10,6 +12,7 @@ from sqlglot.dialects.dialect import (
 from sqlglot.generator import Generator
 from sqlglot.helper import list_get
 from sqlglot.parser import Parser
+from sqlglot.tokens import Tokenizer, TokenType
 
 
 def _unix_to_time(self, expression):
@@ -30,7 +33,21 @@ def _date_add(self, expression):
     return f"{this} + INTERVAL {e} {unit}"
 
 
+def _struct_pack_sql(self, expression):
+    args = [
+        self.binary(e, ":=") if isinstance(e, exp.EQ) else self.sql(e)
+        for e in expression.expressions
+    ]
+    return f"STRUCT_PACK({', '.join(args)})"
+
+
 class DuckDB(Dialect):
+    class Tokenizer(Tokenizer):
+        KEYWORDS = {
+            **Tokenizer.KEYWORDS,
+            ":=": TokenType.EQ,
+        }
+
     class Parser(Parser):
         FUNCTIONS = {
             **Parser.FUNCTIONS,
@@ -52,6 +69,7 @@ class DuckDB(Dialect):
             "STRING_TO_ARRAY": exp.Split.from_arg_list,
             "STR_SPLIT_REGEX": exp.RegexpSplit.from_arg_list,
             "STRING_SPLIT_REGEX": exp.RegexpSplit.from_arg_list,
+            "STRUCT_PACK": exp.Struct.from_arg_list,
             "TO_TIMESTAMP": exp.TimeStrToTime.from_arg_list,
             "UNNEST": exp.Explode.from_arg_list,
         }
@@ -70,12 +88,17 @@ class DuckDB(Dialect):
             exp.DateToDi: lambda self, e: f"CAST(STRFTIME({self.sql(e, 'this')}, {DuckDB.dateint_format}) AS INT)",
             exp.DiToDate: lambda self, e: f"CAST(STRPTIME(CAST({self.sql(e, 'this')} AS STRING), {DuckDB.dateint_format}) AS DATE)",
             exp.Explode: rename_func("UNNEST"),
+            exp.JSONExtract: arrow_json_extract_sql,
+            exp.JSONExtractScalar: arrow_json_extract_scalar_sql,
+            exp.JSONBExtract: arrow_json_extract_sql,
+            exp.JSONBExtractScalar: arrow_json_extract_scalar_sql,
             exp.RegexpLike: rename_func("REGEXP_MATCHES"),
             exp.RegexpSplit: rename_func("STR_SPLIT_REGEX"),
             exp.SafeDivide: no_safe_divide_sql,
             exp.Split: rename_func("STR_SPLIT"),
             exp.StrToTime: lambda self, e: f"STRPTIME({self.sql(e, 'this')}, {self.format_time(e)})",
             exp.StrToUnix: lambda self, e: f"EPOCH(STRPTIME({self.sql(e, 'this')}, {self.format_time(e)}))",
+            exp.Struct: _struct_pack_sql,
             exp.TableSample: no_tablesample_sql,
             exp.TimeStrToDate: lambda self, e: f"CAST({self.sql(e, 'this')} AS DATE)",
             exp.TimeStrToTime: lambda self, e: f"CAST({self.sql(e, 'this')} AS TIMESTAMP)",

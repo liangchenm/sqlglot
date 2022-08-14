@@ -1,11 +1,27 @@
 import unittest
 
-from sqlglot import ErrorLevel, ParseError, UnsupportedError, transpile
+from sqlglot import (
+    Dialect,
+    Dialects,
+    ErrorLevel,
+    ParseError,
+    UnsupportedError,
+    transpile,
+)
 
 
 class TestDialects(unittest.TestCase):
+    maxDiff = None
+
     def validate(self, sql, target, **kwargs):
         self.assertEqual(transpile(sql, **kwargs)[0], target)
+
+    def test_enum(self):
+        for dialect in Dialects:
+            self.assertIsNotNone(Dialect[dialect])
+            self.assertIsNotNone(Dialect.get(dialect))
+            self.assertIsNotNone(Dialect.get_or_raise(dialect))
+            self.assertIsNotNone(Dialect[dialect.value])
 
     def test_duckdb(self):
         self.validate(
@@ -284,6 +300,18 @@ class TestDialects(unittest.TestCase):
             write="duckdb",
         )
 
+        self.validate(
+            "STRUCT_PACK(x := 1, y := '2')",
+            "STRUCT_PACK(x := 1, y := '2')",
+            read="duckdb",
+        )
+        self.validate(
+            "STRUCT_PACK(x := 1, y := '2')",
+            "STRUCT(x = 1, y = '2')",
+            read="duckdb",
+            write="spark",
+        )
+
     def test_mysql(self):
         self.validate(
             "SELECT CAST(`a`.`b` AS INT) FROM foo",
@@ -414,6 +442,18 @@ class TestDialects(unittest.TestCase):
         )
 
         self.validate(
+            "current_time",
+            "CURRENT_TIME()",
+            read="bigquery",
+        )
+
+        self.validate(
+            "current_timestamp",
+            "CURRENT_TIMESTAMP()",
+            read="bigquery",
+        )
+
+        self.validate(
             "SELECT ROW() OVER (y ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM x WINDOW y AS (PARTITION BY CATEGORY)",
             "SELECT ROW() OVER (y ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM x WINDOW y AS (PARTITION BY CATEGORY)",
             read="bigquery",
@@ -423,6 +463,34 @@ class TestDialects(unittest.TestCase):
             "SELECT LAST_VALUE(a IGNORE NULLS) OVER y FROM x WINDOW y AS (PARTITION BY CATEGORY)",
             "SELECT LAST_VALUE(a IGNORE NULLS) OVER y FROM x WINDOW y AS (PARTITION BY CATEGORY)",
             read="bigquery",
+        )
+
+        self.validate(
+            "CREATE TABLE db.example_table (col_a struct<struct_col_a:int, struct_col_b:string>)",
+            "CREATE TABLE db.example_table (col_a STRUCT<struct_col_a INT64, struct_col_b STRING>)",
+            read="spark",
+            write="bigquery",
+        )
+
+        self.validate(
+            "CREATE TABLE db.example_table (col_a struct<struct_col_a:int, struct_col_b:struct<nested_col_a:string, nested_col_b:string>>)",
+            "CREATE TABLE db.example_table (col_a STRUCT<struct_col_a INT64, struct_col_b STRUCT<nested_col_a STRING, nested_col_b STRING>>)",
+            read="spark",
+            write="bigquery",
+        )
+
+        self.validate(
+            "CREATE TABLE db.example_table (col_a struct<struct_col_a int64, struct_col_b string>)",
+            "CREATE TABLE db.example_table (col_a STRUCT<struct_col_a INT64, struct_col_b STRING>)",
+            read="bigquery",
+            write="bigquery",
+        )
+
+        self.validate(
+            "CREATE TABLE db.example_table (col_a STRUCT<struct_col_a INT64, struct_col_b STRUCT<nested_col_a STRING, nested_col_b STRING>>)",
+            "CREATE TABLE db.example_table (col_a STRUCT<struct_col_a INT64, struct_col_b STRUCT<nested_col_a STRING, nested_col_b STRING>>)",
+            read="bigquery",
+            write="bigquery",
         )
 
     def test_postgres(self):
@@ -444,6 +512,19 @@ class TestDialects(unittest.TestCase):
             "CREATE TABLE x (a UUID)",
             read="postgres",
             write="hive",
+        )
+
+        self.validate(
+            "CREATE TABLE x (a INT SERIAL)",
+            "CREATE TABLE x (a INTEGER AUTOINCREMENT)",
+            read="postgres",
+            write="sqlite",
+        )
+        self.validate(
+            "CREATE TABLE x (a INTEGER AUTOINCREMENT)",
+            "CREATE TABLE x (a INT SERIAL)",
+            read="sqlite",
+            write="postgres",
         )
 
         self.validate(
@@ -474,12 +555,48 @@ class TestDialects(unittest.TestCase):
             write="postgres",
         )
 
+        for read, write in [(None, "postgres")]:
+            for a, b in [
+                ("JSON_EXTRACT(x, 'y')", "x->'y'"),
+                ("JSON_EXTRACT_SCALAR(x, 'y')", "x->>'y'"),
+                ("JSONB_EXTRACT(x, 'y')", "x#>'y'"),
+                ("JSONB_EXTRACT_SCALAR(x, 'y')", "x#>>'y'"),
+            ]:
+                self.validate(a, b, read=read, write=write, identity=False)
+                self.validate(b, a, read=write, write=read, identity=False)
+
+        self.validate(
+            "x->'1'",
+            "x->'1'",
+            read="postgres",
+            write="sqlite",
+        )
+        self.validate(
+            "x#>'1'",
+            "x->'1'",
+            read="postgres",
+            write="sqlite",
+        )
+
+        self.validate(
+            "STRFTIME(x, '%y-%-m-%S')",
+            "TO_CHAR(x, 'YY-FMMM-SS')",
+            read="duckdb",
+            write="postgres",
+        )
+
         with self.assertRaises(UnsupportedError):
             transpile(
                 "DATE_ADD(x, y, 'day')",
                 write="postgres",
                 unsupported_level=ErrorLevel.RAISE,
             )
+
+        self.validate(
+            "SELECT * FROM x FETCH 1 ROW",
+            "SELECT * FROM x FETCH FIRST 1 ROWS ONLY",
+            read="postgres",
+        )
 
     def test_presto(self):
         self.validate(
@@ -511,31 +628,25 @@ class TestDialects(unittest.TestCase):
         )
         self.validate(
             "CAST(a AS ARRAY(INT))",
-            "CAST(a AS ARRAY<INTEGER>)",
+            "CAST(a AS ARRAY(INTEGER))",
             read="presto",
             write="presto",
         )
         self.validate(
             "CAST(ARRAY[1, 2] AS ARRAY(BIGINT))",
-            "CAST(ARRAY[1, 2] AS ARRAY<BIGINT>)",
+            "CAST(ARRAY[1, 2] AS ARRAY(BIGINT))",
             read="presto",
             write="presto",
         )
         self.validate(
             "CAST(MAP(ARRAY[1], ARRAY[1]) AS MAP(INT,INT))",
-            "CAST(MAP(ARRAY[1], ARRAY[1]) AS MAP<INTEGER, INTEGER>)",
+            "CAST(MAP(ARRAY[1], ARRAY[1]) AS MAP(INTEGER, INTEGER))",
             read="presto",
             write="presto",
         )
         self.validate(
             "CAST(MAP(ARRAY['a','b','c'], ARRAY[ARRAY[1], ARRAY[2], ARRAY[3]]) AS MAP(VARCHAR, ARRAY(INT)))",
-            "CAST(MAP(ARRAY['a', 'b', 'c'], ARRAY[ARRAY[1], ARRAY[2], ARRAY[3]]) AS MAP<VARCHAR, ARRAY<INTEGER>>)",
-            read="presto",
-            write="presto",
-        )
-        self.validate(
-            "CAST(ARRAY[1, 2] AS ARRAY<BIGINT>)",
-            "CAST(ARRAY[1, 2] AS ARRAY<BIGINT>)",
+            "CAST(MAP(ARRAY['a', 'b', 'c'], ARRAY[ARRAY[1], ARRAY[2], ARRAY[3]]) AS MAP(VARCHAR, ARRAY(INTEGER)))",
             read="presto",
             write="presto",
         )
@@ -1041,6 +1152,39 @@ class TestDialects(unittest.TestCase):
             read="presto",
             identity=False,
         )
+        self.validate(
+            "SELECT a AS b FROM x GROUP BY b",
+            "SELECT a AS b FROM x GROUP BY 1",
+            write="presto",
+        )
+
+        self.validate(
+            "CREATE TABLE db.example_table (col_a struct<struct_col_a:int, struct_col_b:string>)",
+            "CREATE TABLE db.example_table (col_a ROW(struct_col_a INTEGER, struct_col_b VARCHAR))",
+            read="spark",
+            write="presto",
+        )
+
+        self.validate(
+            "CREATE TABLE db.example_table (col_a struct<struct_col_a:int, struct_col_b:struct<nested_col_a:string, nested_col_b:string>>)",
+            "CREATE TABLE db.example_table (col_a ROW(struct_col_a INTEGER, struct_col_b ROW(nested_col_a VARCHAR, nested_col_b VARCHAR)))",
+            read="spark",
+            write="presto",
+        )
+
+        self.validate(
+            "CREATE TABLE db.example_table (col_a ROW(struct_col_a INTEGER, struct_col_b VARCHAR))",
+            "CREATE TABLE db.example_table (col_a ROW(struct_col_a INTEGER, struct_col_b VARCHAR))",
+            read="presto",
+            write="presto",
+        )
+
+        self.validate(
+            "CREATE TABLE db.example_table (col_a ROW(struct_col_a INTEGER, struct_col_b ROW(nested_col_a VARCHAR, nested_col_b VARCHAR)))",
+            "CREATE TABLE db.example_table (col_a ROW(struct_col_a INTEGER, struct_col_b ROW(nested_col_a VARCHAR, nested_col_b VARCHAR)))",
+            read="presto",
+            write="presto",
+        )
 
     def test_hive(self):
         sql = transpile('SELECT "a"."b" FROM "foo"', write="hive")[0]
@@ -1136,6 +1280,7 @@ class TestDialects(unittest.TestCase):
         )
         self.validate("LOG(10)", "LN(10)", read="hive", write="presto")
         self.validate("LOG(2, 10)", "LOG(2, 10)", read="hive", write="presto")
+        self.validate("'\\''", "''''", read="hive", write="presto")
         self.validate("'\"x\"'", "'\"x\"'", read="hive", write="presto")
         self.validate("\"'x'\"", "'''x'''", read="hive", write="presto")
         self.validate('ds = "2020-01-01"', "ds = '2020-01-01'", read="hive")
@@ -1410,6 +1555,11 @@ class TestDialects(unittest.TestCase):
             read="hive",
             write="presto",
         )
+        self.validate(
+            "SELECT a AS b FROM x GROUP BY b",
+            "SELECT a AS b FROM x GROUP BY 1",
+            write="hive",
+        )
 
     def test_spark(self):
         self.validate(
@@ -1435,6 +1585,12 @@ class TestDialects(unittest.TestCase):
             "SELECT APPROX_DISTINCT(a) FROM foo",
             read="spark",
             write="presto",
+        )
+        self.validate(
+            "CREATE TABLE x USING ICEBERG PARTITIONED BY (MONTHS(y)) LOCATION 's3://z'",
+            "CREATE TABLE x USING ICEBERG PARTITIONED BY (MONTHS(y)) LOCATION 's3://z'",
+            read="spark",
+            write="spark",
         )
         self.validate(
             "CREATE TABLE test STORED AS PARQUET AS SELECT 1",
@@ -1507,7 +1663,7 @@ class TestDialects(unittest.TestCase):
         )
         self.validate(
             "REDUCE(x, 0, (acc, x) -> acc + x, acc -> acc)",
-            "AGGREGATE(x, 0, (acc, x) -> acc + x, (acc) -> acc)",
+            "AGGREGATE(x, 0, (acc, x) -> acc + x, acc -> acc)",
             write="spark",
         )
 
@@ -1593,12 +1749,85 @@ class TestDialects(unittest.TestCase):
             write="presto",
         )
 
+        self.validate(
+            "CREATE TABLE db.example_table (col_a struct<struct_col_a:int, struct_col_b:string>)",
+            "CREATE TABLE db.example_table (col_a STRUCT<struct_col_a: INT, struct_col_b: STRING>)",
+            read="spark",
+            write="spark",
+        )
+
+        self.validate(
+            "CREATE TABLE db.example_table (col_a struct<struct_col_a:int, struct_col_b:struct<nested_col_a:string, nested_col_b:string>>)",
+            "CREATE TABLE db.example_table (col_a STRUCT<struct_col_a: INT, struct_col_b: STRUCT<nested_col_a: STRING, nested_col_b: STRING>>)",
+            read="spark",
+            write="spark",
+        )
+
+        self.validate(
+            "CREATE TABLE db.example_table (col_a array<int>, col_b array<array<int>>)",
+            "CREATE TABLE db.example_table (col_a ARRAY<INT>, col_b ARRAY<ARRAY<INT>>)",
+            read="spark",
+            write="spark",
+        )
+
+        self.validate(
+            "SELECT 4 << 1",
+            "SELECT SHIFTLEFT(4, 1)",
+            read="hive",
+            write="spark",
+        )
+
+        self.validate(
+            "SELECT 4 >> 1",
+            "SELECT SHIFTRIGHT(4, 1)",
+            read="hive",
+            write="spark",
+        )
+
+        self.validate(
+            "SELECT SHIFTRIGHT(4, 1)",
+            "SELECT 4 >> 1",
+            read="spark",
+            write="hive",
+        )
+
+        self.validate(
+            "SELECT SHIFTLEFT(4, 1)",
+            "SELECT 4 << 1",
+            read="spark",
+            write="hive",
+        )
+        self.validate(
+            "SELECT * FROM VALUES ('x'), ('y') AS t(z)",
+            "SELECT * FROM (VALUES ('x'), ('y')) AS t(z)",
+            write="spark",
+        )
+
+        self.validate(
+            'CREATE TABLE blah (col_a INT) COMMENT "Test comment: blah" PARTITIONED BY (date STRING) STORED AS ICEBERG',
+            "CREATE TABLE blah (col_a INT) COMMENT 'Test comment: blah' PARTITIONED BY (date STRING) STORED AS ICEBERG",
+            read="spark",
+            write="spark",
+        )
+
+        self.validate(
+            "CREATE TABLE z (a INT) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARACTER SET=utf8 COLLATE=utf8_bin COMMENT='x'",
+            "CREATE TABLE z (a INT) COMMENT 'x'",
+            read="mysql",
+            write="spark",
+        )
+
     def test_snowflake(self):
         self.validate(
             'x:a:"b c"',
             "x['a']['b c']",
             read="snowflake",
         )
+        self.validate(
+            "CAST(x AS DOUBLE PRECISION)",
+            "CAST(x AS DOUBLE)",
+            read="snowflake",
+        )
 
         self.validate(
             "SELECT a FROM test WHERE a = 1 GROUP BY a HAVING a = 2 QUALIFY z ORDER BY a LIMIT 10",
@@ -1620,10 +1849,73 @@ class TestDialects(unittest.TestCase):
         self.validate(
             "SELECT a FROM test AS t QUALIFY ROW_NUMBER() OVER (PARTITION BY a ORDER BY Z) = 1",
             "SELECT a FROM test AS t QUALIFY ROW_NUMBER() OVER (PARTITION BY a ORDER BY Z) = 1",
+            read="snowflake",
+        )
+        self.validate(
+            "SELECT TO_TIMESTAMP(1659981729)",
+            "SELECT TO_TIMESTAMP(1659981729)",
+            read="snowflake",
+        )
+        self.validate(
+            "SELECT TO_TIMESTAMP(1659981729000, 3)",
+            "SELECT TO_TIMESTAMP(1659981729)",
+            read="snowflake",
+        )
+        self.validate(
+            "SELECT TO_TIMESTAMP('1659981729')",
+            "SELECT TO_TIMESTAMP('1659981729')",
+            read="snowflake",
+        )
+        self.validate(
+            "SELECT TO_TIMESTAMP('2013-04-05 01:02:03')",
+            "SELECT TO_TIMESTAMP('2013-04-05 01:02:03', 'yyyy-mm-dd hh24:mi:ss')",
+            read="snowflake",
+        )
+        self.validate(
+            "SELECT TO_TIMESTAMP('04/05/2013 01:02:03', 'mm/dd/yyyy hh24:mi:ss')",
+            "SELECT TO_TIMESTAMP('04/05/2013 01:02:03', 'mm/dd/yyyy hh24:mi:ss')",
+            read="snowflake",
+        )
+        self.validate(
+            "SELECT TO_TIMESTAMP('04/05/2013 01:02:03', 'mm/dd/yyyy hh24:mi:ss')",
+            "SELECT TO_TIMESTAMP('04/05/2013 01:02:03', 'MM/dd/yyyy HH:mm:ss')",
+            read="snowflake",
+            write="spark",
+        )
+        self.validate(
+            "SELECT strptime('04/05/2013 01:02:03', '%m/%d/%Y %H:%M:%S');",
+            "SELECT TO_TIMESTAMP('04/05/2013 01:02:03', 'mm/dd/yyyy hh24:mi:ss')",
+            read="duckdb",
+            write="snowflake",
+        )
+        self.validate(
+            "SELECT IFF(TRUE, 'true', 'false')",
+            "SELECT IFF(TRUE, 'true', 'false')",
             read="snowflake",
         )
 
     def test_sqlite(self):
+        self.validate(
+            """
+            CREATE TABLE "Track"
+            (
+                CONSTRAINT "PK_Track" FOREIGN KEY ("TrackId"),
+                FOREIGN KEY ("AlbumId") REFERENCES "Album" ("AlbumId")
+                    ON DELETE NO ACTION ON UPDATE NO ACTION,
+                FOREIGN KEY ("AlbumId") ON DELETE CASCADE ON UPDATE RESTRICT,
+                FOREIGN KEY ("AlbumId") ON DELETE SET NULL ON UPDATE SET DEFAULT
+            )
+            """,
+            """CREATE TABLE "Track" (
+  CONSTRAINT "PK_Track" FOREIGN KEY ("TrackId"),
+  FOREIGN KEY ("AlbumId") REFERENCES "Album"("AlbumId") ON DELETE NO ACTION ON UPDATE NO ACTION,
+  FOREIGN KEY ("AlbumId") ON DELETE CASCADE ON UPDATE RESTRICT,
+  FOREIGN KEY ("AlbumId") ON DELETE SET NULL ON UPDATE SET DEFAULT
+)""",
+            read="sqlite",
+            write="sqlite",
+            pretty=True,
+        )
         self.validate(
             "SELECT CAST(`a`.`b` AS SMALLINT) FROM foo",
             "SELECT CAST(`a`.`b` AS INTEGER) FROM foo",
@@ -1639,6 +1931,26 @@ class TestDialects(unittest.TestCase):
 
         self.validate(
             "LEVENSHTEIN(col1, col2)", "EDITDIST3(col1, col2)", write="sqlite"
+        )
+
+        self.validate(
+            "CREATE TABLE z (a INTEGER UNIQUE PRIMARY KEY AUTOINCREMENT)",
+            "CREATE TABLE z (a INT UNIQUE PRIMARY KEY AUTO_INCREMENT)",
+            read="sqlite",
+            write="mysql",
+        )
+
+        self.validate(
+            "CREATE TABLE z (a INT UNIQUE PRIMARY KEY AUTO_INCREMENT)",
+            "CREATE TABLE z (a INTEGER UNIQUE PRIMARY KEY AUTOINCREMENT)",
+            read="mysql",
+            write="sqlite",
+        )
+        self.validate(
+            """CREATE TABLE "x" ("Name" NVARCHAR(200) NOT NULL)""",
+            """CREATE TABLE "x" ("Name" TEXT(200) NOT NULL)""",
+            read="sqlite",
+            write="sqlite",
         )
 
     def test_oracle(self):
@@ -1658,6 +1970,11 @@ class TestDialects(unittest.TestCase):
             "SELECT TOP 10 x FROM y",
             "SELECT x FROM y LIMIT 10",
             read="oracle",
+        )
+        self.validate(
+            "SELECT a AS b FROM x GROUP BY b",
+            "SELECT a AS b FROM x GROUP BY 1",
+            write="oracle",
         )
 
     def test_tableau(self):
@@ -1692,4 +2009,22 @@ class TestDialects(unittest.TestCase):
             "ARRAY_SUM(ARRAY(1, 2))",
             "REDUCE(ARRAY[1, 2], 0, (acc, x) -> acc + x, acc -> acc)",
             write="trino",
+        )
+
+    def test_clickhouse(self):
+        self.validate(
+            "dictGet(x, 'y')",
+            "dictGet(x, 'y')",
+            write="clickhouse",
+        )
+
+        self.validate(
+            "select * from x final",
+            "SELECT * FROM x FINAL",
+            read="clickhouse",
+        )
+        self.validate(
+            "select * from x y final",
+            "SELECT * FROM x AS y FINAL",
+            read="clickhouse",
         )

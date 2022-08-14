@@ -1,3 +1,5 @@
+from enum import Enum
+
 from sqlglot import exp
 from sqlglot.generator import Generator
 from sqlglot.helper import csv, list_get
@@ -5,6 +7,25 @@ from sqlglot.parser import Parser
 from sqlglot.time import format_time
 from sqlglot.tokens import Tokenizer
 from sqlglot.trie import new_trie
+
+
+class Dialects(str, Enum):
+    DIALECT = ""
+
+    BIGQUERY = "bigquery"
+    CLICKHOUSE = "clickhouse"
+    DUCKDB = "duckdb"
+    HIVE = "hive"
+    MYSQL = "mysql"
+    ORACLE = "oracle"
+    POSTGRES = "postgres"
+    PRESTO = "presto"
+    SNOWFLAKE = "snowflake"
+    SPARK = "spark"
+    SQLITE = "sqlite"
+    STARROCKS = "starrocks"
+    TABLEAU = "tableau"
+    TRINO = "trino"
 
 
 class _Dialect(type):
@@ -20,7 +41,8 @@ class _Dialect(type):
 
     def __new__(cls, clsname, bases, attrs):
         klass = super().__new__(cls, clsname, bases, attrs)
-        cls.classes[clsname.lower()] = klass
+        enum = Dialects.__members__.get(clsname.upper())
+        cls.classes[enum.value if enum is not None else clsname.lower()] = klass
 
         klass.time_trie = new_trie(klass.time_mapping)
         klass.inverse_time_mapping = {v: k for k, v in klass.time_mapping.items()}
@@ -43,6 +65,7 @@ class Dialect(metaclass=_Dialect):
     index_offset = 0
     unnest_column_only = False
     alias_post_tablesample = False
+    normalize_functions = "upper"
 
     date_format = "'%Y-%m-%d'"
     dateint_format = "'%Y%m%d'"
@@ -124,6 +147,7 @@ class Dialect(metaclass=_Dialect):
                 "time_trie": self.inverse_time_trie,
                 "unnest_column_only": self.unnest_column_only,
                 "alias_post_tablesample": self.alias_post_tablesample,
+                "normalize_functions": self.normalize_functions,
                 **opts,
             }
         )
@@ -148,6 +172,14 @@ def if_sql(self, expression):
         self.sql(expression, "false"),
     )
     return f"IF({expressions})"
+
+
+def arrow_json_extract_sql(self, expression):
+    return f"{self.sql(expression, 'this')}->{self.sql(expression, 'path')}"
+
+
+def arrow_json_extract_scalar_sql(self, expression):
+    return f"{self.sql(expression, 'this')}->>{self.sql(expression, 'path')}"
 
 
 def no_ilike_sql(self, expression):

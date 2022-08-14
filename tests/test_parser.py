@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from sqlglot import parse, parse_one, exp, Parser
 from sqlglot.errors import ErrorLevel, ParseError
+from tests.helpers import assert_logger_contains
 
 
 class TestParser(unittest.TestCase):
@@ -102,11 +103,17 @@ class TestParser(unittest.TestCase):
             parse_one("WITH cte AS (SELECT * FROM x)")
 
     def test_space(self):
+        # self.assertEqual(
+        #    parse_one("SELECT ROW() OVER(PARTITION  BY x) FROM x GROUP  BY y").sql(),
+        #    "SELECT ROW() OVER (PARTITION BY x) FROM x GROUP BY y",
+        # )
+
         self.assertEqual(
             parse_one(
-                "SELECT ROW() OVER(PARTITION  BY x) FROM x GROUP  BY y", ""
+                """SELECT   * FROM x GROUP
+                BY y"""
             ).sql(),
-            "SELECT ROW() OVER (PARTITION BY x) FROM x GROUP BY y",
+            "SELECT * FROM x GROUP BY y",
         )
 
     def test_missing_by(self):
@@ -125,12 +132,12 @@ class TestParser(unittest.TestCase):
         """
         )
 
-        assert expression.expressions[0].text("this") == "annotation1"
-        assert expression.expressions[1].text("this") == "annotation2:testing"
-        assert expression.expressions[2].text("this") == "test#annotation"
-        assert expression.expressions[3].text("this") == "c#annotation3"
-        assert expression.expressions[4].text("this") == "annotation4"
-        assert expression.expressions[5].text("this") == ""
+        assert expression.expressions[0].name == "annotation1"
+        assert expression.expressions[1].name == "annotation2:testing"
+        assert expression.expressions[2].name == "test#annotation"
+        assert expression.expressions[3].name == "annotation3"
+        assert expression.expressions[4].name == "annotation4"
+        assert expression.expressions[5].name == ""
 
     def test_pretty_config_override(self):
         self.assertEqual(parse_one("SELECT col FROM x").sql(), "SELECT col FROM x")
@@ -141,4 +148,31 @@ class TestParser(unittest.TestCase):
 
         self.assertEqual(
             parse_one("SELECT col FROM x").sql(pretty=True), "SELECT\n  col\nFROM x"
+        )
+
+    @patch("sqlglot.parser.logger")
+    def test_comment_error_n(self, logger):
+        parse_one(
+            """CREATE TABLE x
+(
+-- test
+)""",
+            error_level=ErrorLevel.WARN,
+        )
+
+        assert_logger_contains(
+            "Required keyword: 'expressions' missing for <class 'sqlglot.expressions.Schema'>. Line 4, Col: 1.",
+            logger,
+        )
+
+    @patch("sqlglot.parser.logger")
+    def test_comment_error_r(self, logger):
+        parse_one(
+            """CREATE TABLE x (-- test\r)""",
+            error_level=ErrorLevel.WARN,
+        )
+
+        assert_logger_contains(
+            "Required keyword: 'expressions' missing for <class 'sqlglot.expressions.Schema'>. Line 2, Col: 1.",
+            logger,
         )

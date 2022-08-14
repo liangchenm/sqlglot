@@ -57,6 +57,10 @@ class Expression(metaclass=_Expression):
         return self.args.get("this")
 
     @property
+    def expression(self):
+        return self.args.get("expression")
+
+    @property
     def expressions(self):
         return self.args.get("expressions") or []
 
@@ -71,7 +75,7 @@ class Expression(metaclass=_Expression):
     @property
     def alias(self):
         if isinstance(self.args.get("alias"), TableAlias):
-            return self.args["alias"].text("this")
+            return self.args["alias"].name
         return self.text("alias")
 
     @property
@@ -105,10 +109,14 @@ class Expression(metaclass=_Expression):
 
     def _set_parent(self, kwargs):
         for arg_key, node in kwargs.items():
-            for v in ensure_list(node):
-                if isinstance(v, Expression):
-                    v.parent = self
-                    v.arg_key = arg_key
+            if isinstance(node, Expression):
+                node.parent = self
+                node.arg_key = arg_key
+            elif isinstance(node, list):
+                for v in node:
+                    if isinstance(v, Expression):
+                        v.parent = self
+                        v.arg_key = arg_key
 
     @property
     def depth(self):
@@ -487,11 +495,6 @@ class Create(Expression):
         "properties": False,
         "temporary": False,
         "replace": False,
-        "engine": False,
-        "auto_increment": False,
-        "character_set": False,
-        "collate": False,
-        "comment": False,
     }
 
 
@@ -537,7 +540,12 @@ class ColumnDef(Expression):
         "default": False,
         "not_null": False,
         "primary": False,
+        "unique": False,
     }
+
+
+class Constraint(Expression):
+    arg_types = {"this": True, "expressions": True}
 
 
 class Delete(Expression):
@@ -550,6 +558,15 @@ class Drop(Expression):
 
 class Filter(Expression):
     arg_types = {"this": True, "expression": True}
+
+
+class ForeignKey(Expression):
+    arg_types = {
+        "expressions": True,
+        "reference": False,
+        "delete": False,
+        "update": False,
+    }
 
 
 class From(Expression):
@@ -589,6 +606,10 @@ class Insert(Expression):
 
 class Partition(Expression):
     pass
+
+
+class Fetch(Expression):
+    arg_types = {"direction": False, "count": True}
 
 
 class Group(Expression):
@@ -697,12 +718,32 @@ class Lateral(DerivedTable):
     arg_types = {"this": True, "outer": False, "alias": False}
 
 
+# Clickhouse FROM FINAL modifier
+# https://clickhouse.com/docs/en/sql-reference/statements/select/from/#final-modifier
+class Final(Expression):
+    pass
+
+
 class Offset(Expression):
     arg_types = {"this": False, "expression": True}
 
 
 class Order(Expression):
     arg_types = {"this": False, "expressions": True}
+
+
+# hive specific sorts
+# https://cwiki.apache.org/confluence/display/Hive/LanguageManual+SortBy
+class Cluster(Order):
+    pass
+
+
+class Distribute(Order):
+    pass
+
+
+class Sort(Order):
+    pass
 
 
 class Ordered(Expression):
@@ -717,8 +758,52 @@ class Property(Expression):
     arg_types = {"this": True, "value": True}
 
 
+class TableFormatProperty(Property):
+    pass
+
+
+class PartitionedByProperty(Property):
+    pass
+
+
+class FileFormatProperty(Property):
+    pass
+
+
+class LocationProperty(Property):
+    pass
+
+
+class EngineProperty(Property):
+    pass
+
+
+class AutoIncrementProperty(Property):
+    pass
+
+
+class CharacterSetProperty(Property):
+    arg_types = {"this": True, "value": True, "default": True}
+
+
+class CollateProperty(Property):
+    pass
+
+
+class SchemaCommentProperty(Property):
+    pass
+
+
+class AnonymousProperty(Property):
+    pass
+
+
 class Qualify(Expression):
     pass
+
+
+class Reference(Expression):
+    arg_types = {"this": True, "expressions": True}
 
 
 class Table(Expression):
@@ -830,7 +915,7 @@ class Union(Subqueryable, Expression):
 
     @property
     def right(self):
-        return self.args.get("expression")
+        return self.expression
 
 
 class Except(Union):
@@ -885,6 +970,9 @@ class Select(Subqueryable, Expression):
         "having": False,
         "qualify": False,
         "window": False,
+        "distribute": False,
+        "sort": False,
+        "cluster": False,
         "order": False,
         "limit": False,
         "offset": False,
@@ -1309,19 +1397,26 @@ class Select(Subqueryable, Expression):
             dialect=dialect,
             parser_opts=parser_opts,
         )
+        properties_expression = None
+        if properties:
+            properties_str = " ".join(
+                [
+                    f"{k} = '{v}'" if isinstance(v, str) else f"{k} = {v}"
+                    for k, v in properties.items()
+                ]
+            )
+            properties_expression = _maybe_parse(
+                properties_str,
+                into=Properties,
+                dialect=dialect,
+                parser_opts=parser_opts,
+            )
+
         return Create(
             this=table_expression,
             kind="table",
             expression=instance,
-            properties=Properties(
-                expressions=[
-                    Property(
-                        this=Literal.string(k),
-                        value=Literal.string(v),
-                    )
-                    for k, v in (properties or {}).items()
-                ]
-            ),
+            properties=properties_expression,
         )
 
     @property
@@ -1338,6 +1433,9 @@ class Subquery(DerivedTable):
         "this": True,
         "alias": False,
         "joins": False,
+        "distribute": False,
+        "sort": False,
+        "cluster": False,
         "order": False,
         "limit": False,
         "offset": False,
@@ -1438,6 +1536,8 @@ class DataType(Expression):
         ARRAY = auto()
         MAP = auto()
         UUID = auto()
+        GEOGRAPHY = auto()
+        STRUCT = auto()
 
     @classmethod
     def build(cls, dtype, **kwargs):
@@ -1447,6 +1547,10 @@ class DataType(Expression):
             else DataType.Type[dtype.upper()],
             **kwargs,
         )
+
+
+class StructKwarg(Expression):
+    arg_types = {"this": True, "expression": True}
 
 
 # WHERE x <OP> EXISTS|ALL|ANY|SOME(SELECT ...)
@@ -1485,7 +1589,7 @@ class Binary(Expression):
 
     @property
     def right(self):
-        return self.args.get("expression")
+        return self.expression
 
 
 class Add(Binary):
@@ -1831,11 +1935,19 @@ class CurrentDatetime(Func):
     arg_types = {"this": False}
 
 
+class CurrentTime(Func):
+    arg_types = {"this": False}
+
+
 class CurrentTimestamp(Func):
-    arg_types = {}
+    arg_types = {"this": False}
 
 
 class DateAdd(Func, TimeUnit):
+    arg_types = {"this": True, "expression": True, "unit": False}
+
+
+class DateSub(Func, TimeUnit):
     arg_types = {"this": True, "expression": True, "unit": False}
 
 
@@ -1843,7 +1955,31 @@ class DateDiff(Func, TimeUnit):
     arg_types = {"this": True, "expression": True, "unit": False}
 
 
+class DateTrunc(Func, TimeUnit):
+    arg_types = {"this": True, "unit": True, "zone": False}
+
+
+class DatetimeAdd(Func, TimeUnit):
+    arg_types = {"this": True, "expression": True, "unit": False}
+
+
+class DatetimeSub(Func, TimeUnit):
+    arg_types = {"this": True, "expression": True, "unit": False}
+
+
 class DatetimeDiff(Func, TimeUnit):
+    arg_types = {"this": True, "expression": True, "unit": False}
+
+
+class DatetimeTrunc(Func, TimeUnit):
+    arg_types = {"this": True, "unit": True, "zone": False}
+
+
+class TimestampAdd(Func, TimeUnit):
+    arg_types = {"this": True, "expression": True, "unit": False}
+
+
+class TimestampSub(Func, TimeUnit):
     arg_types = {"this": True, "expression": True, "unit": False}
 
 
@@ -1855,12 +1991,16 @@ class TimestampTrunc(Func, TimeUnit):
     arg_types = {"this": True, "unit": True, "zone": False}
 
 
-class DateTrunc(Func, TimeUnit):
-    arg_types = {"this": True, "unit": True, "zone": False}
+class TimeAdd(Func, TimeUnit):
+    arg_types = {"this": True, "expression": True, "unit": False}
 
 
-class DatetimeTrunc(Func, TimeUnit):
-    arg_types = {"this": True, "unit": True, "zone": False}
+class TimeSub(Func, TimeUnit):
+    arg_types = {"this": True, "expression": True, "unit": False}
+
+
+class TimeDiff(Func, TimeUnit):
+    arg_types = {"this": True, "expression": True, "unit": False}
 
 
 class TimeTrunc(Func, TimeUnit):
@@ -1869,10 +2009,6 @@ class TimeTrunc(Func, TimeUnit):
 
 class DateStrToDate(Func):
     pass
-
-
-class DateSub(Func, TimeUnit):
-    arg_types = {"this": True, "expression": True, "unit": False}
 
 
 class DateToDateStr(Func):
@@ -1923,6 +2059,14 @@ class JSONExtract(Func):
 
 class JSONExtractScalar(JSONExtract):
     _sql_names = ["JSON_EXTRACT_SCALAR"]
+
+
+class JSONBExtract(JSONExtract):
+    _sql_names = ["JSONB_EXTRACT"]
+
+
+class JSONBExtractScalar(JSONExtract):
+    _sql_names = ["JSONB_EXTRACT_SCALAR"]
 
 
 class Least(Func):
@@ -2035,6 +2179,11 @@ class StrToUnix(Func):
     arg_types = {"this": True, "format": True}
 
 
+class Struct(Func):
+    arg_types = {"expressions": True}
+    is_var_len_args = True
+
+
 class StructExtract(Func):
     arg_types = {"this": True, "expression": True}
 
@@ -2104,7 +2253,7 @@ class UnixToStr(Func):
 
 
 class UnixToTime(Func):
-    pass
+    arg_types = {"this": True, "scale": False}
 
 
 class UnixToTimeStr(Func):

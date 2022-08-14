@@ -1,5 +1,5 @@
 from sqlglot import expressions as exp
-from sqlglot.dialects import Dialect
+from sqlglot.dialects import Dialect, Dialects
 from sqlglot.diff import diff
 from sqlglot.errors import ErrorLevel, UnsupportedError, ParseError, TokenError
 from sqlglot.expressions import (
@@ -20,7 +20,7 @@ from sqlglot.tokens import Tokenizer, TokenType
 from sqlglot.parser import Parser
 
 
-__version__ = "4.2.7"
+__version__ = "4.5.2"
 
 pretty = False
 

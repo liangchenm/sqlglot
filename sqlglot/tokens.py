@@ -34,9 +34,10 @@ class TokenType(AutoName):
     PIPE = auto()
     CARET = auto()
     TILDA = auto()
-    LSHIFT = auto()
-    RSHIFT = auto()
-    LAMBDA = auto()
+    ARROW = auto()
+    DARROW = auto()
+    HASH_ARROW = auto()
+    DHASH_ARROW = auto()
     ANNOTATION = auto()
 
     SPACE = auto()
@@ -71,6 +72,7 @@ class TokenType(AutoName):
     DATETIME = auto()
     DATE = auto()
     UUID = auto()
+    GEOGRAPHY = auto()
 
     # keywords
     ADD_FILE = auto()
@@ -86,29 +88,32 @@ class TokenType(AutoName):
     BEGIN = auto()
     BETWEEN = auto()
     BUCKET = auto()
-    BY = auto()
     CACHE = auto()
     CALL = auto()
     CASE = auto()
     CAST = auto()
     CHARACTER_SET = auto()
+    CLUSTER_BY = auto()
     COLLATE = auto()
     COMMENT = auto()
     COMMENT_END = auto()
     COMMENT_START = auto()
     COMMIT = auto()
+    CONSTRAINT = auto()
     CREATE = auto()
     CROSS = auto()
     CUBE = auto()
     CURRENT_DATE = auto()
     CURRENT_DATETIME = auto()
     CURRENT_ROW = auto()
+    CURRENT_TIME = auto()
     CURRENT_TIMESTAMP = auto()
     DIV = auto()
     DEFAULT = auto()
     DELETE = auto()
     DESC = auto()
     DISTINCT = auto()
+    DISTRIBUTE_BY = auto()
     DROP = auto()
     ELSE = auto()
     END = auto()
@@ -119,12 +124,17 @@ class TokenType(AutoName):
     EXPLAIN = auto()
     EXTRACT = auto()
     FALSE = auto()
+    FETCH = auto()
     FILTER = auto()
+    FINAL = auto()
+    FIRST = auto()
     FOLLOWING = auto()
+    FOREIGN_KEY = auto()
+    FORMAT = auto()
     FULL = auto()
     FUNCTION = auto()
     FROM = auto()
-    GROUP = auto()
+    GROUP_BY = auto()
     GROUPING_SETS = auto()
     HAVING = auto()
     HINT = auto()
@@ -144,14 +154,18 @@ class TokenType(AutoName):
     LEFT = auto()
     LIKE = auto()
     LIMIT = auto()
+    LOCATION = auto()
     MAP = auto()
     MOD = auto()
+    NEXT = auto()
+    NO_ACTION = auto()
     NULL = auto()
     OFFSET = auto()
     ON = auto()
+    ONLY = auto()
     OPTIMIZE = auto()
     OPTIONS = auto()
-    ORDER = auto()
+    ORDER_BY = auto()
     ORDERED = auto()
     ORDINALITY = auto()
     OUTER = auto()
@@ -159,6 +173,8 @@ class TokenType(AutoName):
     OVER = auto()
     OVERWRITE = auto()
     PARTITION = auto()
+    PARTITION_BY = auto()
+    PARTITIONED_BY = auto()
     PERCENT = auto()
     PLACEHOLDER = auto()
     PRECEDING = auto()
@@ -170,16 +186,21 @@ class TokenType(AutoName):
     RECURSIVE = auto()
     REPLACE = auto()
     RESPECT_NULLS = auto()
+    REFERENCES = auto()
     RIGHT = auto()
     RLIKE = auto()
     ROLLUP = auto()
+    ROW = auto()
     ROWS = auto()
     SCHEMA_COMMENT = auto()
     SELECT = auto()
     SET = auto()
     SHOW = auto()
     SOME = auto()
+    SORT_BY = auto()
     STORED = auto()
+    STRUCT = auto()
+    TABLE_FORMAT = auto()
     TABLE_SAMPLE = auto()
     TEMPORARY = auto()
     TIME = auto()
@@ -204,6 +225,7 @@ class TokenType(AutoName):
     WITH_TIME_ZONE = auto()
     WITHIN_GROUP = auto()
     WITHOUT_TIME_ZONE = auto()
+    UNIQUE = auto()
 
 
 class Token:
@@ -284,6 +306,7 @@ class Tokenizer(metaclass=_Tokenizer):
         "*": TokenType.STAR,
         "~": TokenType.TILDA,
         "?": TokenType.PLACEHOLDER,
+        "#": TokenType.ANNOTATION,
     }
 
     QUOTES = ["'"]
@@ -300,9 +323,10 @@ class Tokenizer(metaclass=_Tokenizer):
         "<=": TokenType.LTE,
         "<>": TokenType.NEQ,
         "!=": TokenType.NEQ,
-        "<<": TokenType.LSHIFT,
-        ">>": TokenType.RSHIFT,
-        "->": TokenType.LAMBDA,
+        "->": TokenType.ARROW,
+        "->>": TokenType.DARROW,
+        "#>": TokenType.HASH_ARROW,
+        "#>>": TokenType.DHASH_ARROW,
         "ADD ARCHIVE": TokenType.ADD_FILE,
         "ADD ARCHIVES": TokenType.ADD_FILE,
         "ADD FILE": TokenType.ADD_FILE,
@@ -321,16 +345,17 @@ class Tokenizer(metaclass=_Tokenizer):
         "BEGIN": TokenType.BEGIN,
         "BETWEEN": TokenType.BETWEEN,
         "BUCKET": TokenType.BUCKET,
-        "BY": TokenType.BY,
         "CALL": TokenType.CALL,
         "CACHE": TokenType.CACHE,
         "UNCACHE": TokenType.UNCACHE,
         "CASE": TokenType.CASE,
         "CAST": TokenType.CAST,
         "CHARACTER SET": TokenType.CHARACTER_SET,
+        "CLUSTER BY": TokenType.CLUSTER_BY,
         "COLLATE": TokenType.COLLATE,
         "COMMENT": TokenType.SCHEMA_COMMENT,
         "COMMIT": TokenType.COMMIT,
+        "CONSTRAINT": TokenType.CONSTRAINT,
         "CREATE": TokenType.CREATE,
         "CROSS": TokenType.CROSS,
         "CUBE": TokenType.CUBE,
@@ -342,6 +367,7 @@ class Tokenizer(metaclass=_Tokenizer):
         "DELETE": TokenType.DELETE,
         "DESC": TokenType.DESC,
         "DISTINCT": TokenType.DISTINCT,
+        "DISTRIBUTE BY": TokenType.DISTRIBUTE_BY,
         "DROP": TokenType.DROP,
         "ELSE": TokenType.ELSE,
         "END": TokenType.END,
@@ -352,12 +378,16 @@ class Tokenizer(metaclass=_Tokenizer):
         "EXPLAIN": TokenType.EXPLAIN,
         "EXTRACT": TokenType.EXTRACT,
         "FALSE": TokenType.FALSE,
+        "FETCH": TokenType.FETCH,
         "FILTER": TokenType.FILTER,
+        "FIRST": TokenType.FIRST,
         "FULL": TokenType.FULL,
         "FUNCTION": TokenType.FUNCTION,
         "FOLLOWING": TokenType.FOLLOWING,
+        "FOREIGN KEY": TokenType.FOREIGN_KEY,
+        "FORMAT": TokenType.FORMAT,
         "FROM": TokenType.FROM,
-        "GROUP": TokenType.GROUP,
+        "GROUP BY": TokenType.GROUP_BY,
         "GROUPING SETS": TokenType.GROUPING_SETS,
         "HAVING": TokenType.HAVING,
         "IF": TokenType.IF,
@@ -376,21 +406,26 @@ class Tokenizer(metaclass=_Tokenizer):
         "LEFT": TokenType.LEFT,
         "LIKE": TokenType.LIKE,
         "LIMIT": TokenType.LIMIT,
+        "LOCATION": TokenType.LOCATION,
+        "NEXT": TokenType.NEXT,
+        "NO ACTION": TokenType.NO_ACTION,
         "NOT": TokenType.NOT,
         "NULL": TokenType.NULL,
         "OFFSET": TokenType.OFFSET,
         "ON": TokenType.ON,
+        "ONLY": TokenType.ONLY,
         "OPTIMIZE": TokenType.OPTIMIZE,
         "OPTIONS": TokenType.OPTIONS,
         "OR": TokenType.OR,
-        "ORDER": TokenType.ORDER,
+        "ORDER BY": TokenType.ORDER_BY,
         "ORDINALITY": TokenType.ORDINALITY,
         "OUTER": TokenType.OUTER,
         "OUT OF": TokenType.OUT_OF,
         "OVER": TokenType.OVER,
         "OVERWRITE": TokenType.OVERWRITE,
         "PARTITION": TokenType.PARTITION,
-        "PARTITIONED": TokenType.PARTITION,
+        "PARTITION BY": TokenType.PARTITION_BY,
+        "PARTITIONED BY": TokenType.PARTITIONED_BY,
         "PERCENT": TokenType.PERCENT,
         "PRECEDING": TokenType.PRECEDING,
         "PRIMARY KEY": TokenType.PRIMARY_KEY,
@@ -399,16 +434,20 @@ class Tokenizer(metaclass=_Tokenizer):
         "REGEXP": TokenType.RLIKE,
         "REPLACE": TokenType.REPLACE,
         "RESPECT NULLS": TokenType.RESPECT_NULLS,
+        "REFERENCES": TokenType.REFERENCES,
         "RIGHT": TokenType.RIGHT,
         "RLIKE": TokenType.RLIKE,
         "ROLLUP": TokenType.ROLLUP,
+        "ROW": TokenType.ROW,
         "ROWS": TokenType.ROWS,
         "SELECT": TokenType.SELECT,
         "SET": TokenType.SET,
         "SHOW": TokenType.SHOW,
         "SOME": TokenType.SOME,
+        "SORT BY": TokenType.SORT_BY,
         "STORED": TokenType.STORED,
         "TABLE": TokenType.TABLE,
+        "TABLE_FORMAT": TokenType.TABLE_FORMAT,
         "TBLPROPERTIES": TokenType.PROPERTIES,
         "TABLESAMPLE": TokenType.TABLE_SAMPLE,
         "TEMP": TokenType.TEMPORARY,
@@ -466,6 +505,8 @@ class Tokenizer(metaclass=_Tokenizer):
         "TIMESTAMPTZ": TokenType.TIMESTAMPTZ,
         "DATE": TokenType.DATE,
         "DATETIME": TokenType.DATETIME,
+        "UNIQUE": TokenType.UNIQUE,
+        "STRUCT": TokenType.STRUCT,
     }
 
     WHITE_SPACE = {
@@ -567,8 +608,6 @@ class Tokenizer(metaclass=_Tokenizer):
                 self._scan_number()
             elif self._char == self.identifier:
                 self._scan_identifier()
-            elif self._char == "#":
-                self._scan_annotation()
             else:
                 self._scan_keywords()
         return self.tokens
@@ -607,37 +646,64 @@ class Tokenizer(metaclass=_Tokenizer):
                 self._add(TokenType.STRING)
 
     def _scan_keywords(self):
-        size = 1
+        size = 0
         word = None
         chars = self._text
+        char = chars
+        prev_space = False
+        skip = False
+        trie = self.KEYWORD_TRIE
 
         while chars:
-            result = in_trie(self.KEYWORD_TRIE, chars.upper())
+            if skip:
+                result = 1
+            else:
+                result, trie = in_trie(trie, char.upper())
 
             if result == 0:
                 break
             if result == 2:
                 word = chars
             size += 1
-            chars = self._chars(size)
+            end = self._current - 1 + size
+
+            if end < self.size:
+                char = self.sql[end]
+                is_space = char in self.WHITE_SPACE
+
+                if not is_space or not prev_space:
+                    if is_space:
+                        char = " "
+                    chars += char
+                    prev_space = is_space
+                    skip = False
+                else:
+                    skip = True
+            else:
+                chars = None
 
         if not word:
             if self._char in self.SINGLE_TOKENS:
-                self._add(self.SINGLE_TOKENS[self._char])
-            else:
-                self._scan_var()
+                token = self.SINGLE_TOKENS[self._char]
+                if token == TokenType.ANNOTATION:
+                    self._scan_annotation()
+                    return
+                self._add(token)
+                return
+            self._scan_var()
             return
+
         if self._scan_comment(word):
             return
         if self._scan_string(word):
             return
 
-        self._advance(len(word) - 1)
+        self._advance(size - 1)
         self._add(self.KEYWORDS[word.upper()])
 
     def _scan_comment(self, comment):
         if comment in self.COMMENTS:
-            while not self._end and self.WHITE_SPACE.get(self._char) != TokenType.BREAK:
+            while not self._end and self.WHITE_SPACE.get(self._peek) != TokenType.BREAK:
                 self._advance()
             return True
 
@@ -702,7 +768,7 @@ class Tokenizer(metaclass=_Tokenizer):
 
         while True:
             if self._char == self.escape and self._peek == quote:
-                text += f"{self.ESCAPE_CODE}{self._char}"
+                text += f"{self.ESCAPE_CODE}{self._peek}"
                 self._advance(2)
             else:
                 if self._chars(size) == quote:
@@ -711,7 +777,7 @@ class Tokenizer(metaclass=_Tokenizer):
                     break
 
                 if self._char == "'":
-                    text += f"{self.ESCAPE_CODE}{self._char}"
+                    text += f"{self.ESCAPE_CODE}'"
                     self._advance()
                 elif self._end:
                     raise RuntimeError(
