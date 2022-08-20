@@ -312,6 +312,13 @@ class TestDialects(unittest.TestCase):
             write="spark",
         )
 
+        self.validate(
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname NULLS LAST, lname",
+            read="duckdb",
+            write="duckdb",
+        )
+
     def test_mysql(self):
         self.validate(
             "SELECT CAST(`a`.`b` AS INT) FROM foo",
@@ -327,6 +334,13 @@ class TestDialects(unittest.TestCase):
             write="mysql",
         )
 
+        with self.assertRaises(UnsupportedError):
+            transpile(
+                "SELECT * FROM a ORDER BY col_a NULLS LAST",
+                write="mysql",
+                unsupported_level=ErrorLevel.RAISE,
+            )
+
     def test_starrocks(self):
         self.validate(
             "SELECT CAST(`a`.`b` AS INT) FROM foo",
@@ -341,6 +355,13 @@ class TestDialects(unittest.TestCase):
             read="hive",
             write="starrocks",
         )
+
+        with self.assertRaises(UnsupportedError):
+            transpile(
+                "SELECT * FROM a ORDER BY col_a NULLS LAST",
+                write="starrocks",
+                unsupported_level=ErrorLevel.RAISE,
+            )
 
     def test_bigquery(self):
         self.validate(
@@ -493,6 +514,33 @@ class TestDialects(unittest.TestCase):
             write="bigquery",
         )
 
+        self.validate(
+            "SELECT * FROM a UNION SELECT * FROM b",
+            "SELECT * FROM a UNION DISTINCT SELECT * FROM b",
+            write="bigquery",
+        )
+
+        with self.assertRaises(UnsupportedError):
+            transpile(
+                "SELECT * FROM a INTERSECT SELECT * FROM b",
+                write="bigquery",
+                unsupported_level=ErrorLevel.RAISE,
+            )
+
+        with self.assertRaises(UnsupportedError):
+            transpile(
+                "SELECT * FROM a EXCEPT SELECT * FROM b",
+                write="bigquery",
+                unsupported_level=ErrorLevel.RAISE,
+            )
+
+        self.validate(
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname NULLS LAST, lname",
+            read="bigquery",
+            write="bigquery",
+        )
+
     def test_postgres(self):
         self.validate(
             "SELECT CAST(`a`.`b` AS DOUBLE) FROM foo",
@@ -596,6 +644,20 @@ class TestDialects(unittest.TestCase):
             "SELECT * FROM x FETCH 1 ROW",
             "SELECT * FROM x FETCH FIRST 1 ROWS ONLY",
             read="postgres",
+        )
+
+        self.validate(
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
+            "SELECT fname, lname, age FROM person ORDER BY age DESC, fname, lname",
+            read="postgres",
+            write="postgres",
+        )
+
+        self.validate(
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
+            "SELECT fname, lname, age FROM person ORDER BY age DESC, fname, lname NULLS FIRST",
+            read="spark",
+            write="postgres",
         )
 
     def test_presto(self):
@@ -1186,6 +1248,20 @@ class TestDialects(unittest.TestCase):
             write="presto",
         )
 
+        self.validate(
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname, lname",
+            read="presto",
+            write="presto",
+        )
+
+        self.validate(
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname, lname NULLS FIRST",
+            read="spark",
+            write="presto",
+        )
+
     def test_hive(self):
         sql = transpile('SELECT "a"."b" FROM "foo"', write="hive")[0]
         self.assertEqual(sql, "SELECT `a`.`b` FROM `foo`")
@@ -1561,6 +1637,13 @@ class TestDialects(unittest.TestCase):
             write="hive",
         )
 
+        self.validate(
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname NULLS LAST, lname",
+            read="hive",
+            write="hive",
+        )
+
     def test_spark(self):
         self.validate(
             'SELECT "a"."b" FROM "foo"',
@@ -1804,16 +1887,41 @@ class TestDialects(unittest.TestCase):
         )
 
         self.validate(
-            'CREATE TABLE blah (col_a INT) COMMENT "Test comment: blah" PARTITIONED BY (date STRING) STORED AS ICEBERG',
-            "CREATE TABLE blah (col_a INT) COMMENT 'Test comment: blah' PARTITIONED BY (date STRING) STORED AS ICEBERG",
+            """CREATE TABLE blah (col_a INT) COMMENT "Test comment: blah" PARTITIONED BY (date STRING) STORED AS ICEBERG TBLPROPERTIES('x' = '1')""",
+            """CREATE TABLE blah (
+  col_a INT
+)
+COMMENT 'Test comment: blah'
+PARTITIONED BY (
+  date STRING
+)
+STORED AS ICEBERG
+TBLPROPERTIES (
+  'x' = '1'
+)""",
             read="spark",
             write="spark",
+            pretty=True,
         )
 
         self.validate(
             "CREATE TABLE z (a INT) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARACTER SET=utf8 COLLATE=utf8_bin COMMENT='x'",
             "CREATE TABLE z (a INT) COMMENT 'x'",
             read="mysql",
+            write="spark",
+        )
+
+        self.validate(
+            "CREATE TABLE a (x BINARY)",
+            "CREATE TABLE a (x BINARY)",
+            read="spark",
+            write="spark",
+        )
+
+        self.validate(
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname NULLS LAST, lname",
+            read="spark",
             write="spark",
         )
 
@@ -1836,13 +1944,13 @@ class TestDialects(unittest.TestCase):
         )
         self.validate(
             "SELECT a FROM test WHERE a = 1 GROUP BY a HAVING a = 2 QUALIFY z ORDER BY a LIMIT 10",
-            "SELECT a FROM test WHERE a = 1 GROUP BY a HAVING a = 2 QUALIFY z ORDER BY a LIMIT 10",
+            "SELECT a FROM test WHERE a = 1 GROUP BY a HAVING a = 2 QUALIFY z ORDER BY a NULLS FIRST LIMIT 10",
             read="bigquery",
             write="snowflake",
         )
         self.validate(
             "SELECT a FROM test QUALIFY z ORDER BY a LIMIT 10",
-            "SELECT a FROM test QUALIFY z ORDER BY a LIMIT 10",
+            "SELECT a FROM test QUALIFY z ORDER BY a NULLS FIRST LIMIT 10",
             read="bigquery",
             write="snowflake",
         )
@@ -1892,6 +2000,20 @@ class TestDialects(unittest.TestCase):
             "SELECT IFF(TRUE, 'true', 'false')",
             "SELECT IFF(TRUE, 'true', 'false')",
             read="snowflake",
+        )
+
+        self.validate(
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
+            "SELECT fname, lname, age FROM person ORDER BY age DESC, fname, lname",
+            read="snowflake",
+            write="snowflake",
+        )
+
+        self.validate(
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
+            "SELECT fname, lname, age FROM person ORDER BY age DESC, fname, lname NULLS FIRST",
+            read="spark",
+            write="snowflake",
         )
 
     def test_sqlite(self):
@@ -1949,6 +2071,13 @@ class TestDialects(unittest.TestCase):
         self.validate(
             """CREATE TABLE "x" ("Name" NVARCHAR(200) NOT NULL)""",
             """CREATE TABLE "x" ("Name" TEXT(200) NOT NULL)""",
+            read="sqlite",
+            write="sqlite",
+        )
+
+        self.validate(
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname NULLS LAST, lname",
             read="sqlite",
             write="sqlite",
         )
@@ -2017,6 +2146,11 @@ class TestDialects(unittest.TestCase):
             "dictGet(x, 'y')",
             write="clickhouse",
         )
+        self.validate(
+            "CAST(1 AS NULLABLE(INT64))",
+            "CAST(1 AS NULLABLE(BIGINT))",
+            read="clickhouse",
+        )
 
         self.validate(
             "select * from x final",
@@ -2027,4 +2161,18 @@ class TestDialects(unittest.TestCase):
             "select * from x y final",
             "SELECT * FROM x AS y FINAL",
             read="clickhouse",
+        )
+
+        self.validate(
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname, lname",
+            read="clickhouse",
+            write="clickhouse",
+        )
+
+        self.validate(
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
+            "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname, lname NULLS FIRST",
+            read="spark",
+            write="clickhouse",
         )

@@ -1,7 +1,7 @@
 import logging
 
 from sqlglot import exp
-from sqlglot.errors import ErrorLevel, UnsupportedError
+from sqlglot.errors import ErrorLevel, UnsupportedError, concat_errors
 from sqlglot.helper import apply_index_offset, csv, ensure_list
 from sqlglot.time import format_time
 from sqlglot.tokens import TokenType, Tokenizer
@@ -35,6 +35,12 @@ class Generator:
             Default: False
         unsupported_level (ErrorLevel): determines the generator's behavior when it encounters
             unsupported expressions. Default ErrorLevel.WARN.
+        null_ordering (str): Indicates the default null ordering method to use if not explicitly set.
+            Options are "nulls_are_small", "nulls_are_large", "nulls_are_last".
+            Default: "nulls_are_small"
+        max_unsupported (int): Maximum number of unsupported messages to include in a raised UnsupportedError.
+            This is only relevant if unsupported_level is ErrorLevel.RAISE.
+            Default: 3
     """
 
     TRANSFORMS = {
@@ -52,6 +58,8 @@ class Generator:
         exp.TableFormatProperty: lambda self, e: f"TABLE_FORMAT={self.sql(e, 'value')}",
         exp.TsOrDsAdd: lambda self, e: f"TS_OR_DS_ADD({self.sql(e, 'this')}, {self.sql(e, 'expression')}, {self.sql(e, 'unit')})",
     }
+
+    NULL_ORDERING_SUPPORTED = True
 
     TYPE_MAPPING = {}
 
@@ -90,6 +98,8 @@ class Generator:
         "normalize_functions",
         "unsupported_level",
         "unsupported_messages",
+        "null_ordering",
+        "max_unsupported",
         "_indent",
     )
 
@@ -110,6 +120,8 @@ class Generator:
         alias_post_tablesample=False,
         normalize_functions="upper",
         unsupported_level=ErrorLevel.WARN,
+        null_ordering=None,
+        max_unsupported=3,
     ):
         # pylint: disable=too-many-arguments
         import sqlglot
@@ -130,6 +142,8 @@ class Generator:
         self.normalize_functions = normalize_functions
         self.unsupported_level = unsupported_level
         self.unsupported_messages = []
+        self.max_unsupported = max_unsupported
+        self.null_ordering = null_ordering
         self._indent = indent
 
     def generate(self, expression):
@@ -148,14 +162,19 @@ class Generator:
         if self.unsupported_level == ErrorLevel.IGNORE:
             return sql
 
-        for msg in self.unsupported_messages:
-            if self.unsupported_level == ErrorLevel.RAISE:
-                raise UnsupportedError(msg)
-            logger.warning(msg)
+        if self.unsupported_level == ErrorLevel.WARN:
+            for msg in self.unsupported_messages:
+                logger.warning(msg)
+        elif self.unsupported_level == ErrorLevel.RAISE and self.unsupported_messages:
+            raise UnsupportedError(
+                concat_errors(self.unsupported_messages, self.max_unsupported)
+            )
 
         return sql
 
     def unsupported(self, message):
+        if self.unsupported_level == ErrorLevel.IMMEDIATE:
+            raise UnsupportedError(message)
         self.unsupported_messages.append(message)
 
     def sep(self, sep=" "):
@@ -352,11 +371,11 @@ class Generator:
     def except_sql(self, expression):
         return self.prepend_ctes(
             expression,
-            self.set_operation(
-                expression,
-                f"EXCEPT{' DISTINCT' if expression.args.get('distinct') else ''}",
-            ),
+            self.set_operation(expression, self.except_op(expression)),
         )
+
+    def except_op(self, expression):
+        return f"EXCEPT{' DISTINCT' if expression.args.get('distinct') else ''}"
 
     def fetch_sql(self, expression):
         direction = expression.args.get("direction")
@@ -402,24 +421,33 @@ class Generator:
             elif p_class in self.WITH_PROPERTIES:
                 with_properties.append(p)
 
-        root_sql = self.properties(exp.Properties(expressions=root_properties))
-        with_sql = self.with_properties(exp.Properties(expressions=with_properties))
+        return self.root_properties(
+            exp.Properties(expressions=root_properties)
+        ) + self.with_properties(exp.Properties(expressions=with_properties))
 
-        return root_sql + with_sql
-
-    def properties(self, expression, prefix="", suffix="", sep=" "):
-        if expression.expressions:
-            return (
-                f" {prefix}{self.expressions(expression, flat=True, sep=sep)}{suffix}"
+    def root_properties(self, properties):
+        if properties.expressions:
+            return self.sep() + self.expressions(
+                properties,
+                indent=False,
+                sep=" ",
             )
+        return ""
+
+    def properties(self, properties, prefix="", sep=", "):
+        if properties.expressions:
+            expressions = self.expressions(
+                properties,
+                sep=sep,
+                indent=False,
+            )
+            return f"{self.seg(prefix)}{' ' if prefix else ''}{self.wrap(expressions)}"
         return ""
 
     def with_properties(self, properties):
         return self.properties(
             properties,
-            prefix="WITH (",
-            suffix=")",
-            sep=", ",
+            prefix="WITH",
         )
 
     def property_sql(self, expression):
@@ -444,11 +472,11 @@ class Generator:
     def intersect_sql(self, expression):
         return self.prepend_ctes(
             expression,
-            self.set_operation(
-                expression,
-                f"INTERSECT{' DISTINCT' if expression.args.get('distinct') else ''}",
-            ),
+            self.set_operation(expression, self.intersect_op(expression)),
         )
+
+    def intersect_op(self, expression):
+        return f"INTERSECT{' DISTINCT' if expression.args.get('distinct') else ''}"
 
     def table_sql(self, expression):
         return ".".join(
@@ -598,18 +626,37 @@ class Generator:
 
     def ordered_sql(self, expression):
         desc = expression.args.get("desc")
-        desc = " DESC" if desc else ""
-        return f"{self.sql(expression, 'this')}{desc}"
+        asc = not desc
+        nulls_first = expression.args.get("nulls_first")
+        nulls_last = not nulls_first
+        nulls_are_large = self.null_ordering == "nulls_are_large"
+        nulls_are_small = self.null_ordering == "nulls_are_small"
+        nulls_are_last = self.null_ordering == "nulls_are_last"
 
-    def select_sql(self, expression):
-        hint = self.sql(expression, "hint")
-        distinct = self.sql(expression, "distinct")
-        distinct = f" {distinct}" if distinct else ""
-        expressions = self.expressions(expression)
-        sep = self.sep() if expressions else ""
-        sql = csv(
-            f"SELECT{hint}{distinct}{sep}{expressions}",
-            self.sql(expression, "from"),
+        sort_order = " DESC" if desc else ""
+        nulls_sort_change = ""
+        if nulls_first and (
+            (asc and nulls_are_large) or (desc and nulls_are_small) or nulls_are_last
+        ):
+            nulls_sort_change = " NULLS FIRST"
+        elif (
+            nulls_last
+            and ((asc and nulls_are_small) or (desc and nulls_are_large))
+            and not nulls_are_last
+        ):
+            nulls_sort_change = " NULLS LAST"
+
+        if nulls_sort_change and not self.NULL_ORDERING_SUPPORTED:
+            self.unsupported(
+                "Sorting in an ORDER BY on NULLS FIRST/NULLS LAST is not supported by this dialect"
+            )
+            nulls_sort_change = ""
+
+        return f"{self.sql(expression, 'this')}{sort_order}{nulls_sort_change}"
+
+    def query_modifiers(self, expression, *sqls):
+        return csv(
+            *sqls,
             *[self.sql(sql) for sql in expression.args.get("laterals", [])],
             *[self.sql(sql) for sql in expression.args.get("joins", [])],
             self.sql(expression, "where"),
@@ -624,6 +671,18 @@ class Generator:
             self.sql(expression, "limit"),
             self.sql(expression, "offset"),
             sep="",
+        )
+
+    def select_sql(self, expression):
+        hint = self.sql(expression, "hint")
+        distinct = self.sql(expression, "distinct")
+        distinct = f" {distinct}" if distinct else ""
+        expressions = self.expressions(expression)
+        expressions = f"{self.sep()}{expressions}" if expressions else expressions
+        sql = self.query_modifiers(
+            expression,
+            f"SELECT{hint}{distinct}{expressions}",
+            self.sql(expression, "from"),
         )
         return self.prepend_ctes(expression, sql)
 
@@ -649,17 +708,10 @@ class Generator:
     def subquery_sql(self, expression):
         alias = self.sql(expression, "alias")
 
-        return csv(
+        return self.query_modifiers(
+            expression,
             self.wrap(expression),
             f" AS {alias}" if alias else "",
-            *[self.sql(sql) for sql in expression.args.get("joins", [])],
-            self.sql(expression, "distribute"),
-            self.sql(expression, "sort"),
-            self.sql(expression, "cluster"),
-            self.sql(expression, "order"),
-            self.sql(expression, "limit"),
-            self.sql(expression, "offset"),
-            sep="",
         )
 
     def qualify_sql(self, expression):
@@ -669,10 +721,11 @@ class Generator:
     def union_sql(self, expression):
         return self.prepend_ctes(
             expression,
-            self.set_operation(
-                expression, f"UNION{'' if expression.args.get('distinct') else ' ALL'}"
-            ),
+            self.set_operation(expression, self.union_op(expression)),
         )
+
+    def union_op(self, expression):
+        return f"UNION{'' if expression.args.get('distinct') else ' ALL'}"
 
     def unnest_sql(self, expression):
         args = self.expressions(expression, flat=True)
@@ -997,8 +1050,9 @@ class Generator:
     def set_operation(self, expression, op):
         this = self.sql(expression, "this")
         op = self.seg(op)
-        expression = self.sql(expression, "expression")
-        return f"{this}{op}{self.sep()}{expression}"
+        return self.query_modifiers(
+            expression, f"{this}{op}{self.sep()}{self.sql(expression, 'expression')}"
+        )
 
     def token_sql(self, token_type):
         return self.TOKEN_MAPPING.get(token_type, token_type.name)

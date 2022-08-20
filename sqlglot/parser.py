@@ -1,7 +1,7 @@
 import logging
 
 from sqlglot import exp
-from sqlglot.errors import ErrorLevel, ParseError
+from sqlglot.errors import ErrorLevel, ParseError, concat_errors
 from sqlglot.helper import apply_index_offset, ensure_list, list_get
 from sqlglot.tokens import Token, Tokenizer, TokenType
 
@@ -97,6 +97,12 @@ class Parser:
             Default: 0
         alias_post_tablesample (bool): If the table alias comes after tablesample
             Default: False
+        max_errors (int): Maximum number of error messages to include in a raised ParseError.
+            This is only relevant if error_level is ErrorLevel.RAISE.
+            Default: 3
+        null_ordering (str): Indicates the default null ordering method to use if not explicitly set.
+            Options are "nulls_are_small", "nulls_are_large", "nulls_are_last".
+            Default: "nulls_are_small"
     """
 
     FUNCTIONS = {
@@ -113,6 +119,7 @@ class Parser:
         TokenType.ARRAY,
         TokenType.MAP,
         TokenType.STRUCT,
+        TokenType.NULLABLE,
     }
 
     TYPE_TOKENS = {
@@ -169,6 +176,7 @@ class Parser:
         TokenType.FORMAT,
         TokenType.FUNCTION,
         TokenType.IF,
+        TokenType.ISNULL,
         TokenType.INTERVAL,
         TokenType.LAZY,
         TokenType.LOCATION,
@@ -212,6 +220,7 @@ class Parser:
         TokenType.EXTRACT,
         TokenType.FILTER,
         TokenType.FIRST,
+        TokenType.ISNULL,
         TokenType.OFFSET,
         TokenType.PRIMARY_KEY,
         TokenType.REPLACE,
@@ -374,6 +383,25 @@ class Parser:
         TokenType.USING: _table_format_parser,
     }
 
+    QUERY_MODIFIER_PARSERS = {
+        "laterals": lambda self: self._parse_laterals(),
+        "joins": lambda self: self._parse_joins(),
+        "where": lambda self: self._parse_where(),
+        "group": lambda self: self._parse_group(),
+        "having": lambda self: self._parse_having(),
+        "qualify": lambda self: self._parse_qualify(),
+        "window": lambda self: self._match(TokenType.WINDOW)
+        and self._parse_window(self._parse_id_var(), alias=True),
+        "distribute": lambda self: self._parse_sort(
+            TokenType.DISTRIBUTE_BY, exp.Distribute
+        ),
+        "sort": lambda self: self._parse_sort(TokenType.SORT_BY, exp.Sort),
+        "cluster": lambda self: self._parse_sort(TokenType.CLUSTER_BY, exp.Cluster),
+        "order": lambda self: self._parse_order(),
+        "limit": lambda self: self._parse_limit(),
+        "offset": lambda self: self._parse_offset(),
+    }
+
     CREATABLES = {TokenType.TABLE, TokenType.VIEW, TokenType.FUNCTION}
 
     STRICT_CAST = True
@@ -386,13 +414,15 @@ class Parser:
         "index_offset",
         "unnest_column_only",
         "alias_post_tablesample",
+        "max_errors",
+        "null_ordering",
         "_tokens",
         "_chunks",
         "_index",
         "_curr",
         "_next",
         "_prev",
-        "_return_subquery",
+        "_greedy_subqueries",
     )
 
     def __init__(
@@ -402,12 +432,16 @@ class Parser:
         index_offset=0,
         unnest_column_only=False,
         alias_post_tablesample=False,
+        max_errors=3,
+        null_ordering=None,
     ):
         self.error_level = error_level or ErrorLevel.RAISE
         self.error_message_context = error_message_context
         self.index_offset = index_offset
         self.unnest_column_only = unnest_column_only
         self.alias_post_tablesample = alias_post_tablesample
+        self.max_errors = max_errors
+        self.null_ordering = null_ordering
         self.reset()
 
     def reset(self):
@@ -419,7 +453,7 @@ class Parser:
         self._curr = None
         self._next = None
         self._prev = None
-        self._return_subquery = False
+        self._greedy_subqueries = False
 
     def parse(self, raw_tokens, sql=None):
         """
@@ -476,11 +510,11 @@ class Parser:
         return expressions
 
     def check_errors(self):
-        for error in self.errors:
-            if self.error_level == ErrorLevel.RAISE:
-                raise error
-            if self.error_level == ErrorLevel.WARN:
-                logger.error(error)
+        if self.error_level == ErrorLevel.WARN:
+            for error in self.errors:
+                logger.error(str(error))
+        elif self.error_level == ErrorLevel.RAISE and self.errors:
+            raise ParseError(concat_errors(self.errors, self.max_errors))
 
     def raise_error(self, message, token=None):
         token = token or self._curr or self._prev or Token.string("")
@@ -489,12 +523,13 @@ class Parser:
         start_context = self.sql[max(start - self.error_message_context, 0) : start]
         highlight = self.sql[start:end]
         end_context = self.sql[end : end + self.error_message_context]
-        self.errors.append(
-            ParseError(
-                f"{message}. Line {token.line}, Col: {token.col}.\n"
-                f"  {start_context}\033[4m{highlight}\033[0m{end_context}"
-            )
+        error = ParseError(
+            f"{message}. Line {token.line}, Col: {token.col}.\n"
+            f"  {start_context}\033[4m{highlight}\033[0m{end_context}"
         )
+        if self.error_level == ErrorLevel.IMMEDIATE:
+            raise error
+        self.errors.append(error)
 
     def expression(self, exp_class, **kwargs):
         instance = exp_class(**kwargs)
@@ -568,14 +603,12 @@ class Parser:
                 expression=self._parse_string(),
             )
 
-        # the initial expression may be a subquery so we want to override the default
-        # behavior of returning a Paren object.
-        self._return_subquery = True
         expression = self._parse_expression()
-        self._return_subquery = False
-        return (
+        expression = (
             self._parse_set_operations(expression) if expression else self._parse_with()
         )
+        self._parse_query_modifiers(expression)
+        return expression
 
     def _parse_drop(self):
         if self._match(TokenType.TABLE):
@@ -848,7 +881,7 @@ class Parser:
             self.raise_error("Expected AS in CTE")
 
         self._match_l_paren()
-        expression = self._parse_with()
+        expression = self._parse_statement()
         self._match_r_paren()
 
         return self.expression(
@@ -900,31 +933,15 @@ class Parser:
                 hint=hint,
                 distinct=distinct,
                 expressions=expressions,
-                **{
-                    "from": self._parse_from(),
-                    "laterals": self._parse_laterals(),
-                    "joins": self._parse_joins(),
-                    "where": self._parse_where(),
-                    "group": self._parse_group(),
-                    "having": self._parse_having(),
-                    "qualify": self._parse_qualify(),
-                    "window": self._match(TokenType.WINDOW)
-                    and self._parse_window(self._parse_id_var(), alias=True),
-                    "distribute": self._parse_sort(
-                        TokenType.DISTRIBUTE_BY, exp.Distribute
-                    ),
-                    "sort": self._parse_sort(TokenType.SORT_BY, exp.Sort),
-                    "cluster": self._parse_sort(TokenType.CLUSTER_BY, exp.Cluster),
-                    "order": self._parse_order(),
-                    "limit": limit or self._parse_limit(),
-                    "offset": self._parse_offset(),
-                },
+                limit=limit,
             )
+            from_ = self._parse_from()
+            if from_:
+                this.set("from", from_)
+            self._parse_query_modifiers(this)
         elif self._match(TokenType.L_PAREN):
             this = self._parse_table()
-            if isinstance(this, exp.Subquery):
-                joins = self._parse_joins()
-                this.set("joins", joins)
+            self._parse_query_modifiers(this)
             self._match_r_paren()
             this = self._parse_subquery(this)
         elif self._match(TokenType.VALUES):
@@ -940,20 +957,17 @@ class Parser:
         return self._parse_set_operations(this)
 
     def _parse_subquery(self, this):
-        alias = self._parse_table_alias()
-        if isinstance(this, exp.Select):
-            return self.expression(exp.Subquery, this=this, alias=alias)
-        return self.expression(
-            exp.Subquery,
-            this=this,
-            alias=alias,
-            order=self._parse_order(),
-            distribute=self._parse_sort(TokenType.DISTRIBUTE_BY, exp.Distribute),
-            sort=self._parse_sort(TokenType.SORT_BY, exp.Sort),
-            cluster=self._parse_sort(TokenType.CLUSTER_BY, exp.Cluster),
-            limit=self._parse_limit(),
-            offset=self._parse_offset(),
-        )
+        return self.expression(exp.Subquery, this=this, alias=self._parse_table_alias())
+
+    def _parse_query_modifiers(self, this):
+        if not isinstance(this, (exp.Subquery, exp.Subqueryable)):
+            return
+
+        for key, parser in self.QUERY_MODIFIER_PARSERS.items():
+            expression = parser(self)
+
+            if expression:
+                this.set(key, expression)
 
     def _parse_annotation(self, expression):
         if self._match(TokenType.ANNOTATION):
@@ -1052,8 +1066,9 @@ class Parser:
             catalog = db
             db = table
             table = self._parse_id_var()
-            if not table:
-                self.raise_error("Expected table name")
+
+        if not table:
+            self.raise_error("Expected table name")
 
         this = self.expression(exp.Table, this=table, db=db, catalog=catalog)
 
@@ -1208,7 +1223,26 @@ class Parser:
     def _parse_ordered(self):
         this = self._parse_conjunction()
         self._match(TokenType.ASC)
-        return self.expression(exp.Ordered, this=this, desc=self._match(TokenType.DESC))
+        is_desc = self._match(TokenType.DESC)
+        is_nulls_first = self._match(TokenType.NULLS_FIRST)
+        is_nulls_last = self._match(TokenType.NULLS_LAST)
+        desc = is_desc or False
+        asc = not desc
+        nulls_first = is_nulls_first or False
+        explicitly_null_ordered = is_nulls_first or is_nulls_last
+        if (
+            not explicitly_null_ordered
+            and (
+                (asc and self.null_ordering == "nulls_are_small")
+                or (desc and self.null_ordering != "nulls_are_small")
+            )
+            and self.null_ordering != "nulls_are_last"
+        ):
+            nulls_first = True
+
+        return self.expression(
+            exp.Ordered, this=this, desc=desc, nulls_first=nulls_first
+        )
 
     def _parse_limit(self, this=None, top=False):
         if self._match(TokenType.TOP if top else TokenType.LIMIT):
@@ -1486,13 +1520,15 @@ class Parser:
             return self.PRIMARY_PARSERS[self._prev.token_type](self, self._prev)
 
         if self._match(TokenType.L_PAREN):
-            expressions = self._parse_csv(self._parse_conjunction) or [
-                self._parse_with()
-            ]
-            this = list_get(expressions, 0)
+            expressions = self._parse_csv(
+                lambda: self._parse_alias(self._parse_conjunction(), explicit=True)
+            ) or [self._parse_with()]
 
+            this = list_get(expressions, 0)
+            self._parse_query_modifiers(this)
             self._match_r_paren()
-            if self._return_subquery and isinstance(this, exp.Subqueryable):
+
+            if isinstance(this, exp.Subqueryable):
                 return self._parse_subquery(this)
             if len(expressions) > 1:
                 return self.expression(exp.Tuple, expressions=expressions)
@@ -1639,7 +1675,7 @@ class Parser:
             )
             parse_option(
                 "default",
-                lambda: self._match(TokenType.DEFAULT) and self._parse_primary(),
+                lambda: self._match(TokenType.DEFAULT) and self._parse_field(),
             )
             parse_option(
                 "not_null",
@@ -1866,8 +1902,11 @@ class Parser:
             and self._prev.text,
         }
 
-    def _parse_alias(self, this):
+    def _parse_alias(self, this, explicit=False):
         any_token = self._match(TokenType.ALIAS)
+
+        if explicit and not any_token:
+            return this
 
         if self._match(TokenType.L_PAREN):
             aliases = self.expression(
@@ -1891,7 +1930,11 @@ class Parser:
         if identifier:
             return identifier
 
-        if any_token and self._curr.token_type not in self.RESERVED_KEYWORDS:
+        if (
+            any_token
+            and self._curr
+            and self._curr.token_type not in self.RESERVED_KEYWORDS
+        ):
             return self._advance() or exp.Identifier(this=self._prev.text, quoted=False)
 
         return self._match_set(self.ID_VAR_TOKENS) and exp.Identifier(
@@ -1953,7 +1996,7 @@ class Parser:
             return None
 
         self._match_l_paren()
-        columns = self._parse_csv(lambda: self._parse_alias(self._parse_id_var()))
+        columns = self._parse_csv(lambda: self._parse_alias(self._parse_expression()))
         self._match_r_paren()
         return columns
 
