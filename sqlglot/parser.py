@@ -106,7 +106,15 @@ class Parser:
     """
 
     FUNCTIONS = {
-        name: f.from_arg_list for f in exp.ALL_FUNCTIONS for name in f.sql_names()
+        **{name: f.from_arg_list for f in exp.ALL_FUNCTIONS for name in f.sql_names()},
+        "TS_OR_DS_TO_DATE_STR": lambda args: exp.Substring(
+            this=exp.Cast(
+                this=list_get(args, 0),
+                to=exp.DataType(this=exp.DataType.Type.TEXT),
+            ),
+            start=exp.Literal.number(1),
+            length=exp.Literal.number(10),
+        ),
     }
 
     NO_PAREN_FUNCTIONS = {
@@ -1270,18 +1278,16 @@ class Parser:
         token_type = self._prev.token_type
 
         if token_type == TokenType.UNION:
-            return self.expression(
-                exp.Union,
-                this=this,
-                distinct=self._match(TokenType.DISTINCT)
-                or not self._match(TokenType.ALL),
-                expression=self._parse_with(),
-            )
+            expression = exp.Union
+        elif token_type == TokenType.EXCEPT:
+            expression = exp.Except
+        else:
+            expression = exp.Intersect
 
         return self.expression(
-            exp.Except if token_type == TokenType.EXCEPT else exp.Intersect,
+            expression,
             this=this,
-            distinct=self._match(TokenType.DISTINCT),
+            distinct=self._match(TokenType.DISTINCT) or not self._match(TokenType.ALL),
             expression=self._parse_with(),
         )
 
@@ -1321,17 +1327,23 @@ class Parser:
                 exp.RegexpLike, this=this, expression=self._parse_type()
             )
         elif self._match(TokenType.IN):
-            self._match_l_paren()
-            expressions = self._parse_csv(
-                lambda: self._parse_expression() or self._parse_with()
-            )
-
-            if len(expressions) == 1 and isinstance(expressions[0], exp.Subqueryable):
-                this = self.expression(exp.In, this=this, query=expressions[0])
+            unnest = self._parse_unnest()
+            if unnest:
+                this = self.expression(exp.In, this=this, unnest=unnest)
             else:
-                this = self.expression(exp.In, this=this, expressions=expressions)
+                self._match_l_paren()
+                expressions = self._parse_csv(
+                    lambda: self._parse_expression() or self._parse_with()
+                )
 
-            self._match_r_paren()
+                if len(expressions) == 1 and isinstance(
+                    expressions[0], exp.Subqueryable
+                ):
+                    this = self.expression(exp.In, this=this, query=expressions[0])
+                else:
+                    this = self.expression(exp.In, this=this, expressions=expressions)
+
+                self._match_r_paren()
         elif self._match(TokenType.BETWEEN):
             low = self._parse_bitwise()
             self._match(TokenType.AND)

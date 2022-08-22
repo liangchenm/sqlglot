@@ -375,7 +375,7 @@ class Generator:
         )
 
     def except_op(self, expression):
-        return f"EXCEPT{' DISTINCT' if expression.args.get('distinct') else ''}"
+        return f"EXCEPT{'' if expression.args.get('distinct') else ' ALL'}"
 
     def fetch_sql(self, expression):
         direction = expression.args.get("direction")
@@ -476,7 +476,7 @@ class Generator:
         )
 
     def intersect_op(self, expression):
-        return f"INTERSECT{' DISTINCT' if expression.args.get('distinct') else ''}"
+        return f"INTERSECT{'' if expression.args.get('distinct') else ' ALL'}"
 
     def table_sql(self, expression):
         return ".".join(
@@ -842,12 +842,17 @@ class Generator:
 
     def in_sql(self, expression):
         query = expression.args.get("query")
-        in_sql = (
-            self.wrap(query)
-            if query
-            else f"({self.expressions(expression, flat=True)})"
-        )
+        unnest = expression.args.get("unnest")
+        if query:
+            in_sql = self.wrap(query)
+        elif unnest:
+            in_sql = self.in_unnest_op(unnest)
+        else:
+            in_sql = f"({self.expressions(expression, flat=True)})"
         return f"{self.sql(expression, 'this')} IN {in_sql}"
+
+    def in_unnest_op(self, unnest):
+        return f"(SELECT {self.sql(unnest)})"
 
     def interval_sql(self, expression):
         return f"INTERVAL {self.sql(expression, 'this')} {self.sql(expression, 'unit')}"
