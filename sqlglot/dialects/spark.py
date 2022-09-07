@@ -72,6 +72,7 @@ class Spark(Hive):
                 for k, v in Hive.Generator.TRANSFORMS.items()
                 if k not in {exp.ArraySort}
             },
+            exp.ApproxDistinct: rename_func("APPROX_COUNT_DISTINCT"),
             exp.ArraySum: lambda self, e: f"AGGREGATE({self.sql(e, 'this')}, 0, (acc, x) -> acc + x, acc -> acc)",
             exp.BitwiseLeftShift: rename_func("SHIFTLEFT"),
             exp.BitwiseRightShift: rename_func("SHIFTRIGHT"),
