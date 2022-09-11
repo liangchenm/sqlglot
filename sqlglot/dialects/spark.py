@@ -83,5 +83,7 @@ class Spark(Hive):
             exp.Map: _map_sql,
             exp.Reduce: rename_func("AGGREGATE"),
             exp.StructKwarg: lambda self, e: f"{self.sql(e, 'this')}: {self.sql(e, 'expression')}",
+            exp.VariancePop: rename_func("VAR_POP"),
+            exp.VarianceSamp: rename_func("VAR_SAMP"),
             HiveMap: _map_sql,
         }
