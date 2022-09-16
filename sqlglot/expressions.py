@@ -2167,7 +2167,7 @@ class SortArray(Func):
 
 
 class Split(Func):
-    arg_types = {"this": True, "expression": True}
+    arg_types = {"this": True, "expression": True, "limit": False}
 
 
 class Substring(Func):

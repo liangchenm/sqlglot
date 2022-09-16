@@ -70,7 +70,7 @@ class Spark(Hive):
             **{
                 k: v
                 for k, v in Hive.Generator.TRANSFORMS.items()
-                if k not in {exp.ArraySort}
+                if k not in {exp.ArraySort, exp.Split}
             },
             exp.ApproxDistinct: rename_func("APPROX_COUNT_DISTINCT"),
             exp.ArraySum: lambda self, e: f"AGGREGATE({self.sql(e, 'this')}, 0, (acc, x) -> acc + x, acc -> acc)",
@@ -81,8 +81,8 @@ class Spark(Hive):
             exp.StrToDate: _str_to_date,
             exp.StrToTime: lambda self, e: f"TO_TIMESTAMP({self.sql(e, 'this')}, {self.format_time(e)})",
             exp.Create: _create_sql,
-            exp.Map: _map_sql,
             exp.Reduce: rename_func("AGGREGATE"),
+            exp.RegexpLike: rename_func("RLIKE"),
             exp.StructKwarg: lambda self, e: f"{self.sql(e, 'this')}: {self.sql(e, 'expression')}",
             exp.TimestampTrunc: lambda self, e: f"DATE_TRUNC({self.sql(e, 'unit')}, {self.sql(e, 'this')})",
             exp.VariancePop: rename_func("VAR_POP"),
